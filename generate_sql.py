@@ -413,6 +413,74 @@ The generated SQL must be compatible with {dialect} dialect.
 Please output the SQL ONLY, wrapped by ```sql and ```.
 """.strip()
     
+    def _build_prompt_icl(self, question: str, schema_str: str, evidence: str = "", dialect: str = "sqlite") -> str:
+        """提示词: ICL 风格（带 few-shot 示例）"""
+        icl_examples = """
+【Example 1】
+Schema:
+Table: frpm
+  - CDSCode: County-District-School code
+  - Free Meal Count (K-12): Number of K-12 students eligible for free meals
+  - Enrollment (K-12): Total K-12 enrollment
+  - County Name: Name of the county
+Table: schools
+  - CDSCode: County-District-School code
+  - School: School name
+  - Phone: School phone number
+
+Question: What is the highest eligible free rate for K-12 students in the schools in Alameda County?
+Evidence: Eligible free rate for K-12 = `Free Meal Count (K-12)` / `Enrollment (K-12)`
+SQL: SELECT `Free Meal Count (K-12)` / `Enrollment (K-12)` FROM frpm WHERE `County Name` = 'Alameda' ORDER BY (CAST(`Free Meal Count (K-12)` AS REAL) / `Enrollment (K-12)`) DESC LIMIT 1
+
+【Example 2】
+Schema:
+Table: frpm
+  - CDSCode: County-District-School code
+  - Charter School (Y/N): Whether the school is a charter school (1=Yes)
+  - District Name: Name of the district
+Table: schools
+  - CDSCode: County-District-School code
+  - Zip: School zip code
+
+Question: Please list the zip code of all the charter schools in Fresno County Office of Education.
+Evidence: Charter schools refers to `Charter School (Y/N)` = 1 in the table frpm
+SQL: SELECT T2.Zip FROM frpm AS T1 INNER JOIN schools AS T2 ON T1.CDSCode = T2.CDSCode WHERE T1.`District Name` = 'Fresno County Office of Education' AND T1.`Charter School (Y/N)` = 1
+
+【Example 3】
+Schema:
+Table: satscores
+  - cds: County-District-School code
+  - AvgScrMath: Average SAT Math score
+  - NumTstTakr: Number of SAT test takers
+Table: schools
+  - CDSCode: County-District-School code
+  - School: School name
+  - Virtual: Whether the school is virtual (F=Fully virtual)
+
+Question: How many schools with an average score in Math greater than 400 in the SAT test are exclusively virtual?
+Evidence: Exclusively virtual refers to Virtual = 'F'
+SQL: SELECT COUNT(DISTINCT T2.School) FROM satscores AS T1 INNER JOIN schools AS T2 ON T1.cds = T2.CDSCode WHERE T2.Virtual = 'F' AND T1.AvgScrMath > 400
+""".strip()
+        
+        return f"""You are an expert {dialect} SQL developer. Given a database schema, question, and evidence, generate the correct SQL query.
+
+Here are some examples:
+{icl_examples}
+
+Now, please solve the following problem:
+
+【Schema】
+{schema_str}
+
+【Question】
+{question}
+
+【Evidence】
+{evidence if evidence else '(No additional evidence)'}
+
+Please generate the SQL query ONLY, wrapped by ```sql and ```.
+""".strip()
+    
     def _build_prompt_detailed(self, question: str, schema_str: str, evidence: str = "", dialect: str = "sqlite") -> str:
         """提示词: 详细思考风格（类似 CoT）"""
         return f"""Task: Generate a {dialect} SQL query for the given question.
@@ -571,7 +639,7 @@ Please generate a corrected SQL query ONLY, wrapped by ```sql and ```.
             ("detailed", self._build_prompt_detailed, 0.2),      # 详细思考
             ("simple", self._build_prompt_simple, 0.1),          # 简洁风格
             ("structural", self._build_prompt_structural, 0.3),  # 结构变体（CTE等）
-            ("stylistic", self._build_prompt_stylistic, 0.2),    # 风格变体
+            ("icl", self._build_prompt_icl, 0.1),                # ICL 风格（few-shot 示例）
         ]
         
         # 算法2: Multiple SQL Generation
