@@ -9,6 +9,7 @@ import sys
 from tqdm import tqdm
 from bird_dataset import BirdDataset
 from generate_sql import XiYanSQLGenerator
+from config import XiYanSQLConfig
 
 
 def generate_predict_file(
@@ -58,8 +59,11 @@ def generate_predict_file(
     print(f"🤖 模型: {model}")
     print(f"💾 保存 Prompt: {save_prompts}")
     
+    # 数据库路径
+    db_path = os.path.join(dataset_path, "dev_databases", f"{samples[0].db_id}", f"{samples[0].db_id}.sqlite")
+    
     # 初始化生成器
-    generator = XiYanSQLGenerator(api_key=api_key, model=model)
+    generator = XiYanSQLGenerator(api_key=api_key, model=model, db_path=db_path)
     
     # 创建 prompt 输出目录
     if save_prompts and not os.path.exists(prompt_output_dir):

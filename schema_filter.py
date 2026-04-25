@@ -57,16 +57,18 @@ class FilteredSchemaSet:
 class SchemaFilter:
     """Schema 过滤器（论文版 Algorithm 1）"""
     
-    def __init__(self, api_key: str = None, base_url: str = None):
+    def __init__(self, api_key: str = None, base_url: str = None, embedding_model: str = None):
         """
         初始化 SchemaFilter
         
         Args:
             api_key: 阿里云 API Key
             base_url: API Base URL
+            embedding_model: 嵌入模型名称
         """
         self.api_key = api_key or os.getenv("DASHSCOPE_API_KEY", "sk-bb901ef8d7e44cb0be1c535e137974c4")
         self.base_url = base_url or "https://dashscope.aliyuncs.com/compatible-mode/v1"
+        self.embedding_model = embedding_model or "text-embedding-v4"
         self.client = None
         
         # 尝试初始化 OpenAI 客户端
@@ -155,7 +157,7 @@ Provide only the keywords separated by commas, without any explanation or number
         if self.client:
             try:
                 response = self.client.embeddings.create(
-                    model="text-embedding-v4",
+                    model=self.embedding_model,
                     input=text
                 )
                 return response.data[0].embedding

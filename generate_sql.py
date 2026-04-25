@@ -14,6 +14,7 @@ XiYan-SQL: 完整实现
 import os
 import re
 import json
+import sqlite3
 from typing import Optional, List, Dict, Any, Tuple
 from dataclasses import dataclass, field
 from collections import defaultdict
@@ -21,6 +22,7 @@ from openai import OpenAI
 
 from bird_dataset import BirdDataset
 from schema_filter import SchemaFilter, TableSchema, FilteredSchemaSet
+from config import XiYanSQLConfig, APIConfig, GeneratorConfig, ReorganizerConfig
 
 
 # ==============================
@@ -56,10 +58,35 @@ class CandidateReorganizer:
     5. 根据是否有主导组决定重组策略
     """
     
-    def __init__(self, api_key: str = None, base_url: str = None):
+    def __init__(self, api_key: str = None, base_url: str = None, db_path: str = None, config: Optional['ReorganizerConfig'] = None):
         self.api_key = api_key or os.getenv("DASHSCOPE_API_KEY", "sk-bb901ef8d7e44cb0be1c535e137974c4")
         self.base_url = base_url or "https://dashscope.aliyuncs.com/compatible-mode/v1"
         self.client = OpenAI(api_key=self.api_key, base_url=self.base_url)
+        self.db_path = db_path  # SQLite 数据库路径
+        self.config = config
+    
+    def _execute_sql(self, sql: str) -> Optional[Any]:
+        """
+        执行 SQL 并返回结果
+        
+        Args:
+            sql: SQL 查询
+            
+        Returns:
+            执行结果（元组列表）或 None（如果执行失败）
+        """
+        if not self.db_path or not os.path.exists(self.db_path):
+            return None
+        
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute(sql)
+            result = cursor.fetchall()
+            conn.close()
+            return result
+        except Exception as e:
+            return None
     
     def _deformalize_sql(self, sql: str) -> str:
         """
@@ -68,8 +95,11 @@ class CandidateReorganizer:
         """
         if not sql:
             return ""
-        # 移除多余空格，统一大小写
-        normalized = re.sub(r'\s+', ' ', sql.strip()).upper()
+        # 移除多余空格，统一关键字大小写（但不改变字符串字面量）
+        normalized = re.sub(r'\s+', ' ', sql.strip())
+        # 标准化 SQL 关键字为大写（简单处理）
+        keywords = r'\b(SELECT|FROM|WHERE|AND|OR|NOT|IN|LIKE|BETWEEN|IS|NULL|AS|ON|JOIN|LEFT|RIGHT|INNER|OUTER|GROUP|BY|ORDER|HAVING|LIMIT|OFFSET|UNION|ALL|DISTINCT|COUNT|SUM|AVG|MAX|MIN|INSERT|UPDATE|DELETE|CREATE|DROP|ALTER|TABLE|INTO|VALUES|SET|EXISTS|CASE|WHEN|THEN|ELSE|END|ASC|DESC)\b'
+        normalized = re.sub(keywords, lambda m: m.group(1).upper(), normalized, flags=re.IGNORECASE)
         return normalized
     
     def _group_by_execution_result(self, candidates: List[SQLCandidate]) -> List[List[SQLCandidate]]:
@@ -83,6 +113,15 @@ class CandidateReorganizer:
         result_to_candidates = defaultdict(list)
         
         for candidate in candidates:
+            # 如果还没有执行结果，尝试执行
+            if candidate.execution_result is None and self.db_path:
+                candidate.execution_result = self._execute_sql(candidate.sql)
+                if candidate.execution_result is not None:
+                    print(f"  [{candidate.source}] Executed: {len(candidate.execution_result)} rows")
+                else:
+                    candidate.has_error = True
+                    print(f"  [{candidate.source}] Execution failed, using de-formalized SQL")
+            
             # 使用执行结果作为键（如果没有执行结果，使用 SQL 本身）
             if candidate.execution_result is not None:
                 key = str(candidate.execution_result)
@@ -131,13 +170,17 @@ class CandidateReorganizer:
         
         Args:
             candidates: 候选 SQL 列表
-            generator_order: 生成器性能排序（可选，默认按 ID 排序）
+            generator_order: 生成器性能排序（可选，默认使用配置或按 ID 排序）
             
         Returns:
             (重组后的候选列表, 是否有主导组)
         """
         if not candidates:
             return [], False
+        
+        # 使用配置中的 generator_order（如果未提供）
+        if generator_order is None and self.config and self.config.generator_order is not None:
+            generator_order = self.config.generator_order
         
         print(f"\n{'='*60}")
         print("Candidate Reorganization Strategy (Algorithm 3)")
@@ -377,22 +420,40 @@ class XiYanSQLGenerator:
     
     def __init__(
         self,
+        config: Optional[XiYanSQLConfig] = None,
         api_key: Optional[str] = None,
-        base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        model: str = "qwen3.6-plus",
-        selection_model: str = "qwen3.6-plus"
+        base_url: Optional[str] = None,
+        model: Optional[str] = None,
+        selection_model: Optional[str] = None,
+        db_path: Optional[str] = None
     ):
-        self.api_key = api_key or os.getenv("DASHSCOPE_API_KEY", "sk-bb901ef8d7e44cb0be1c535e137974c4")
-        self.base_url = base_url
-        self.model = model
+        # 使用配置或默认值
+        self.config = config or XiYanSQLConfig()
+        
+        self.api_key = api_key or self.config.api.api_key
+        self.base_url = base_url or self.config.api.base_url
+        self.model = model or self.config.api.model
+        self.selection_model_name = selection_model or self.config.api.selection_model
+        self.db_path = db_path
         
         self.client = OpenAI(api_key=self.api_key, base_url=self.base_url)
         
         # 初始化各个组件
-        self.schema_filter = SchemaFilter(api_key=self.api_key, base_url=self.base_url)
-        self.reorganizer = CandidateReorganizer(api_key=self.api_key, base_url=self.base_url)
+        self.schema_filter = SchemaFilter(
+            api_key=self.api_key, 
+            base_url=self.base_url,
+            embedding_model=self.config.api.embedding_model
+        )
+        self.reorganizer = CandidateReorganizer(
+            api_key=self.api_key, 
+            base_url=self.base_url, 
+            db_path=db_path,
+            config=self.config.reorganizer
+        )
         self.selection_model = SelectionModel(
-            api_key=self.api_key, base_url=self.base_url, model=selection_model
+            api_key=self.api_key, 
+            base_url=self.base_url, 
+            model=self.selection_model_name
         )
     
     def _build_prompt_standard(self, question: str, schema_str: str, evidence: str = "", dialect: str = "sqlite") -> str:
@@ -632,15 +693,20 @@ Please generate a corrected SQL query ONLY, wrapped by ```sql and ```.
         """
         candidates = []
         
-        # 定义多个生成器（对应论文的多格式 SQL 生成器）
-        # 每个生成器有不同的提示词风格
-        generators = [
-            ("standard", self._build_prompt_standard, 0.1),      # 标准风格
-            ("detailed", self._build_prompt_detailed, 0.2),      # 详细思考
-            ("simple", self._build_prompt_simple, 0.1),          # 简洁风格
-            ("structural", self._build_prompt_structural, 0.3),  # 结构变体（CTE等）
-            ("icl", self._build_prompt_icl, 0.1),                # ICL 风格（few-shot 示例）
-        ]
+        # 从配置获取生成器列表
+        prompt_builders = {
+            "standard": self._build_prompt_standard,
+            "detailed": self._build_prompt_detailed,
+            "simple": self._build_prompt_simple,
+            "structural": self._build_prompt_structural,
+            "icl": self._build_prompt_icl,
+        }
+        
+        # 使用配置中的生成器列表
+        generators = []
+        for gen_name, temp in self.config.generator.generators:
+            if gen_name in prompt_builders:
+                generators.append((gen_name, prompt_builders[gen_name], temp))
         
         # 算法2: Multiple SQL Generation
         # for i = 1 to p_s (schema 版本)
