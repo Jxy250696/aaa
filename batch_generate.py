@@ -107,6 +107,23 @@ def generate_predict_file(
                         f.write(f"证据:\n{sample.evidence}\n\n")
                     f.write(f"真实 SQL:\n{sample.sql}\n\n")
                     
+                    # 打印 Schema 信息
+                    if 'filtered_schema' in result:
+                        f.write("=" * 80 + "\n")
+                        f.write(f"Filtered Schema ({len(result['filtered_schema'])} tables):\n")
+                        f.write("=" * 80 + "\n\n")
+                        for table_name, columns in result['filtered_schema'].items():
+                            f.write(f"Table: {table_name}\n")
+                            f.write(f"Columns: {', '.join(columns)}\n\n")
+                    
+                    # 打印第一个生成 SQL 的提示词
+                    if 'first_prompt' in result:
+                        f.write("=" * 80 + "\n")
+                        f.write(f"First Generator Prompt:\n")
+                        f.write("=" * 80 + "\n\n")
+                        f.write(result['first_prompt'])
+                        f.write("\n\n")
+                    
                     if 'candidates' in result:
                         f.write("=" * 80 + "\n")
                         f.write(f"Generated Candidates ({len(result['candidates'])}):\n")

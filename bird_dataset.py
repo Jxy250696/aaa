@@ -146,7 +146,8 @@ class BirdDataset:
                                     if col_desc:
                                         # 把换行符和多余空格替换为单个空格
                                         clean_col_desc = re.sub(r'\s+', ' ', col_desc).strip()
-                                        full_desc_parts.append(clean_col_desc)
+                                        if clean_col_desc:
+                                            full_desc_parts.append(f"字段描述: {clean_col_desc}")
                                     data_format_val = normalized_row.get('data_format', '').strip()
                                     if data_format_val:
                                         full_desc_parts.append(f"类型: {data_format_val}")

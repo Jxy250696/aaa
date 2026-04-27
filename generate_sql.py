@@ -838,6 +838,22 @@ Please generate a corrected SQL query ONLY, wrapped by ```sql and ```.
                 question, full_schema, evidence=evidence, max_iterations=max_iterations
             )
             result["filtered_schema_set"] = filtered_set
+            
+            # 保存过滤后的 schema 信息到结果
+            filtered_schema_info = {}
+            for schema in filtered_set.schemas:
+                for table in schema.tables:
+                    if table.name not in filtered_schema_info:
+                        filtered_schema_info[table.name] = set()
+                    if table.name in filtered_set.best_schema.relevant_columns:
+                        filtered_schema_info[table.name].update(filtered_set.best_schema.relevant_columns[table.name])
+                    if table.name in schema.relevant_columns:
+                        filtered_schema_info[table.name].update(schema.relevant_columns.get(table.name, []))
+            
+            # 转换为列表格式
+            result["filtered_schema"] = {
+                table_name: sorted(list(cols)) for table_name, cols in filtered_schema_info.items()
+            }
         else:
             filtered_set = None
         
@@ -900,6 +916,15 @@ Please generate a corrected SQL query ONLY, wrapped by ```sql and ```.
                 {"sql": c.sql, "source": c.source} for c in candidates
             ]
             print(f"\nGenerated {len(candidates)} candidate SQLs")
+            
+            # 保存第一个生成 SQL 的提示词到结果
+            if candidates:
+                # 使用第一个 schema 和第一个生成器构建提示词
+                first_schema = filtered_set.schemas[0] if filtered_set else None
+                if first_schema:
+                    first_schema_str = self.schema_filter.schema_to_prompt(first_schema, include_descriptions=True)
+                    first_prompt = self._build_prompt_standard(question, first_schema_str, evidence, dialect)
+                    result["first_prompt"] = first_prompt
             
             # ==============================
             # 第三步: Candidate Reorganization (论文第三步 - 算法3)
